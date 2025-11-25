@@ -42,8 +42,11 @@ fn sbox_scores_to_key_scores<'py>(py: Python<'py>, plaintext_byte : u8, scores :
     // Index mapping for sbox -> key
     let mut sbox_to_key = [0u8; 256];
 
+    // Perform xor only once
+    let xor_inv_sbox = INV_S_BOX.iter().map(|b| b ^ plaintext_byte).collect::<Vec<u8>>();
+
     for sbox_value in 0..256 {
-        sbox_to_key[sbox_value] = INV_S_BOX[sbox_value] ^ plaintext_byte;
+        sbox_to_key[sbox_value] = xor_inv_sbox[sbox_value];
     }
 
     // The key scores after mapping from sbox to key
