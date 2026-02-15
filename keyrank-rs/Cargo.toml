@@ -1,5 +1,3 @@
-cargo-features = ["edition2024"]
-
 [package]
 name = "keyrank-rs"
 version = "0.1.0"
@@ -12,6 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 nalgebra = "0.33.2"
 numpy = "0.25.0"
+rayon = "1.11.0"
 
 
 [dependencies.pyo3]

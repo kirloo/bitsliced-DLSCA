@@ -27,8 +27,8 @@ static INV_S_BOX : LazyLock<[u8; 256]> = std::sync::LazyLock::new(compute_inv_sb
 
 fn compute_inv_sbox() -> [u8; 256] {
     let mut inv_sbox = [0u8; 256];
-    for bytevalue in 0..=255 {
-        inv_sbox[S_BOX[bytevalue as usize] as usize] = bytevalue;
+    for idx in 0..=255 {
+        inv_sbox[S_BOX[idx as usize] as usize] = idx;
     }
     inv_sbox
 }
@@ -60,12 +60,121 @@ fn sbox_scores_to_key_scores<'py>(py: Python<'py>, plaintext_byte : u8, scores :
     Ok(keyscores.to_vec().to_pyarray(py))
 }
 
+fn map_score((scores,pt_byte) : (&mut [f32], u8)) -> Vec<f32> {
+    let mut sbox_to_key = [0u8; 256];
 
+    // Perform xor only once
+    let xor_inv_sbox = INV_S_BOX.iter().map(|b| b ^ pt_byte).collect::<Vec<u8>>();
+
+    for sbox_value in 0..256 {
+        sbox_to_key[sbox_value] = xor_inv_sbox[sbox_value];
+    }
+
+    // The key scores after mapping from sbox to key
+    let mut keyscores = [0.0f32; 256];
+
+    for byte in 0..256 {
+        keyscores[sbox_to_key[byte] as usize] = scores[byte as usize];
+    }
+
+    keyscores.to_vec()
+}
+
+
+use numpy::PyArrayMethods;
+use rayon::prelude::*;
+
+#[pyfunction]
+#[pyo3(signature = (plaintext_bytes, scores))]
+fn sbox_scores_to_keyscores_parallel<'py>(
+    py: Python<'py>, 
+    plaintext_bytes : Vec<u8>,
+    scores : Bound<'py, numpy::PyArray<f32, numpy::ndarray::Dim<[usize; 2]>>>
+) -> PyResult<Bound<'py, numpy::PyArray<f32, numpy::ndarray::Dim<[usize; 2]>>>> {
+
+    // scores (500, 256)
+
+    let mut scores = scores.to_vec().unwrap();
+
+    let keyscores = scores.par_chunks_mut(256)
+        .zip(plaintext_bytes)
+        .map(map_score)
+        .collect::<Vec<_>>();
+
+    let pyarray = numpy::PyArray::from_vec2(py, &keyscores).unwrap();
+
+    return Ok(pyarray);
+}
+
+
+#[pyfunction]
+#[pyo3(signature = (plaintext_bytes))]
+fn sbox_key_permutations<'py>(
+    py: Python<'py>, 
+    plaintext_bytes : Vec<u8>,
+) -> PyResult<Bound<'py, numpy::PyArray<f32, numpy::ndarray::Dim<[usize; 2]>>>> {
+    // Function for constructing permutation vectors in order to map sbox model output to
+    // key during training where every trace has a different plaintext and key
+    
+    let keyscores = plaintext_bytes.par_iter()
+        .map(|pt_byte| {
+            let mut permutation = vec![0.0; 256];
+            for idx in (0..256).into_iter() {
+                // May seem inverted, but this is needed to map
+                // from sbox to key using torch.gather
+                let keyidx = INV_S_BOX[idx] ^ pt_byte;
+                permutation[keyidx as usize] = idx as f32
+            }
+            permutation
+        })
+        .collect::<Vec<_>>();
+
+    let pyarray = numpy::PyArray::from_vec2(py, &keyscores).unwrap();
+
+    return Ok(pyarray);
+}
+
+
+
+
+#[pyfunction]
+#[pyo3(signature = (plaintext_bytes, scores))]
+fn sbox_scores_to_keyscores_2pt<'py>(
+    py: Python<'py>,
+    plaintext_bytes : Bound<'py, numpy::PyArray<f32, numpy::ndarray::Dim<[usize; 2]>>>,
+    scores : Bound<'py, numpy::PyArray<f32, numpy::ndarray::Dim<[usize; 3]>>>
+) -> PyResult<Bound<'py, numpy::PyArray<f32, numpy::ndarray::Dim<[usize; 3]>>>> {
+    let outer_plaintexts = plaintext_bytes
+        .to_vec()
+        .unwrap()
+        .into_par_iter().map(|f| f as u8)
+        .collect::<Vec<_>>();
+    let pt_half = outer_plaintexts.len() / 2;
+
+    let mut outer_scores = scores.to_vec().unwrap();
+    let score_half = outer_scores.len() / 2;
+
+    let keyscores = outer_scores
+        .par_chunks_mut(score_half)
+        .zip(outer_plaintexts.par_chunks(pt_half))
+        .map(|(scores, plaintexts)| 
+            scores
+                .par_chunks_mut(256)
+                .zip(plaintexts)
+                .map(|(score, pt_byte)|
+                    map_score((score, *pt_byte))
+            ).collect::<Vec<_>>()
+        ).collect::<Vec<Vec<_>>>();
+
+    let pyarray = numpy::PyArray::from_vec3(py, &keyscores).unwrap();
+
+    return Ok(pyarray);
+}
 
 #[pymodule]
 fn keyrank_rs(m : &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sbox_scores_to_key_scores, m)?)?;
-
+    m.add_function(wrap_pyfunction!(sbox_scores_to_keyscores_parallel, m)?)?;
+    m.add_function(wrap_pyfunction!(sbox_key_permutations, m)?)?;
 
     Ok(())   
 }
