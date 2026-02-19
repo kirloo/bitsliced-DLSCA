@@ -6,8 +6,6 @@ from torch.utils.data import DataLoader, Dataset, random_split
 
 from keyrank_rs import sbox_key_permutations
 
-torch_rng = torch.manual_seed(777)
-
 DATAFOLDER = "C:/Data"
 
 train_hdf = h5py.File(f"{DATAFOLDER}/simpleserial-aes-fix-500000-diff-profile.hdf5")
@@ -157,7 +155,10 @@ def get_dataloaders(
         target_byte_idx : int,
         trace_interval_start : int,
         trace_interval_end : int,
+        seed = 777,
     ) -> tuple[DataLoader,DataLoader,DataLoader]:
+
+    torch_rng = torch.manual_seed(seed)
 
     train_traces_trunc = train_traces[..., trace_interval_start:trace_interval_end]
     val_test_traces_trunc = val_test_traces[..., trace_interval_start:trace_interval_end]
@@ -182,11 +183,11 @@ def get_dataloaders(
         train_loader = DataLoader(sbox_train_set, batch_size=batch_size, shuffle=True, generator=torch_rng)
 
     if prediction_target == "key":
-        val_loader = DataLoader(key_val_set)
-        test_loader = DataLoader(key_test_set)
+        val_loader = DataLoader(key_val_set, shuffle=False)
+        test_loader = DataLoader(key_test_set, shuffle=False)
     else:
-        val_loader = DataLoader(sbox_val_set)
-        test_loader = DataLoader(sbox_test_set)
+        val_loader = DataLoader(sbox_val_set, shuffle=False)
+        test_loader = DataLoader(sbox_test_set, shuffle=False)
 
 
     return train_loader,val_loader,test_loader

@@ -88,7 +88,6 @@ class RelativeMultiHeadAttn(nn.Module):
         self.qkv_net = nn.Linear(d_model, 3 * n_head * d_head, bias=False)
 
         if self.smooth_pos_emb:
-
             # Input dimension???
             self.r_net = nn.Linear(d_model, self.n_head * self.d_head, bias=False)
         elif self.untie_pos_emb:
@@ -141,7 +140,7 @@ class RelativeMultiHeadAttn(nn.Module):
 
 
         if not self.smooth_pos_emb and self.untie_pos_emb:
-            r = self.pos_emb(r)
+            r = self.pos_emb(r.long().cuda())
         r_drop = self.drop_r(r)
 
         if self.smooth_pos_emb:

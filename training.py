@@ -37,20 +37,19 @@ def mean_keyrank(model : nn.Module, test_loader : DataLoader):
     return mean_rank
 
 
-def mean_sbox_rank(model, sbox_test_loader, n_traces=500):
+def mean_sbox_rank(model, sbox_test_loader, n_traces=500, plaintext=0):
     """Compute mean keyrank from an sbox predicting model across trace set of N keys with M traces per key"""
     total_rank = 0
 
-    for traces, plaintexts, true_key in tqdm(sbox_test_loader, desc='evaluating'):
+    for traces, plaintexts, true_key in sbox_test_loader:
 
         traces : torch.Tensor = traces.to(device)
 
-        plaintexts : torch.Tensor = plaintexts[..., 0].squeeze().to(device)
+        plaintexts : torch.Tensor = plaintexts[..., plaintext].squeeze().to(device)
 
-        # Evaluate on single trace
         sbox_scores : torch.Tensor = model(traces.squeeze()[0:n_traces, :])
 
-        plaintexts = plaintexts.long().detach().cpu().numpy()
+        plaintexts = plaintexts.long().detach().cpu().numpy()[0:n_traces]
         numpy_scores = sbox_scores.detach().cpu().numpy()
             
         numpy_keyscores = keyrank_rs.sbox_scores_to_keyscores_parallel(plaintexts, numpy_scores)
@@ -59,6 +58,7 @@ def mean_sbox_rank(model, sbox_test_loader, n_traces=500):
 
         # logsum scores before calculating rank
         keyscores = keyscores.softmax(dim=1).log().sum(dim=0)
+        #keyscores = keyscores.mean(dim=0).softmax(dim=0)
 
         ranks = keyscores.argsort(dim=-1, descending=True).argsort(dim=-1)
         

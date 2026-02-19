@@ -8,6 +8,8 @@ from training import train_model
 from data import get_dataloaders
 from models import *
 
+from transnet import Transformer
+
 import os
 
 device = torch.device("cuda")
@@ -29,16 +31,22 @@ import sys
 
 EPOCHS = 100
 BATCH_SIZE = 200 #
-PREDICTION_TARGET = "2sbox*"
-TARGET_BYTE_IDX = 15
+PREDICTION_TARGET = "sbox"
+TARGET_BYTE_IDX = 1
 LEARNING_RATE = 0.00001
 
-TRACE_INTERVAL_START = 0
-TRACE_INTERVAL_END = 1000
+TRACE_INTERVAL_START = 900
+TRACE_INTERVAL_END = 1200
 
 INPUT_LENGTH = TRACE_INTERVAL_END - TRACE_INTERVAL_START
 
 model = CNN_ZHANG_(INPUT_LENGTH)
+model = Transformer(1,8,4,2,16,0.,0.,256,11,2,
+                    clamp_len=300,
+                    untie_r=True,
+                    smooth_pos_emb=False,
+                    untie_pos_emb=True
+)
 
 model = model.to(device)
 
