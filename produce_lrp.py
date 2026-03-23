@@ -10,28 +10,32 @@ import torch
 
 import numpy as np
 
-def get_best_epoch(model_name) -> int:
-    with open(f"models/eval/{model_name}.txt", 'r') as f:
-        lines = f.readlines()[1:] # skip "N traces" line
-        lines = [float(line.strip()) for line in lines]
-        best_epoch = np.array(lines).argmin()
+import json
 
+def metadata_best_epoch(model_name) -> int:
+    with open(f"models/{model_name}/metadata.json") as f:
+        metadata = json.load(f)
+        val_scores = metadata["scores"][1]
+        best_epoch = np.array(val_scores).argmin()
     return best_epoch.item()
 
 IMPLEMENTATION = "fixslice"
-PREDICTION_TARGET = "key"
+PREDICTION_TARGET = "sbox"
 TARGET_BYTE = 1
 ARCH = "zhang"
 
-TRACE_START = 0
-TRACE_END = 1000
+SEED = 777
+
+TRACE_START = 400
+TRACE_END = 1500
 
 INPUT_LENGTH = TRACE_END - TRACE_START
 
-model_name = f"{IMPLEMENTATION}-{PREDICTION_TARGET}-byte{TARGET_BYTE}-{ARCH}-{TRACE_START}_{TRACE_END}"
+model_name = f"{IMPLEMENTATION}-{PREDICTION_TARGET}-byte{TARGET_BYTE}-{ARCH}-{TRACE_START}_{TRACE_END}-s{777}"
 
-epoch = 63
+epoch = metadata_best_epoch(model_name)
 
+print(f"Epoch: {epoch}")
 
 device = torch.device("cuda")
 
@@ -53,18 +57,21 @@ layer_lrp = captum.attr.LRP(sbox_model)
 total_attr = torch.zeros(INPUT_LENGTH)
 total_abs_attr = torch.zeros(INPUT_LENGTH)
 
-#for trace, plaintexts, key in tqdm(test_loader):
-for trace, key in tqdm(test_loader):
+for trace, plaintexts, key in tqdm(test_loader):
+#for trace, key in tqdm(test_loader):
     for mod in sbox_model.modules():
         mod.rule = EpsilonRule()
 
     trace = trace[:, 0, :]
-    #plaintexts = plaintexts[:, 0, :].squeeze()
+    plaintexts = plaintexts[:, 0, :].squeeze()
     key = key.item()
 
+    print(plaintexts)
+    quit()
+
     # Add round key (plain key) then sbox
-    #sbox1 = s_box[int(plaintexts[0]) ^ int(key)]
-    #sbox2 = s_box[int(plaintexts[1]) ^ int(key)]
+    sbox1 = s_box[int(plaintexts[0]) ^ int(key)]
+    sbox2 = s_box[int(plaintexts[1]) ^ int(key)]
 
     if PREDICTION_TARGET == "sbox":
         attr = layer_lrp.attribute(trace.to(device), target=sbox1).squeeze()
@@ -89,9 +96,6 @@ data = {
 }
 
 
-
-import json
-
-with open(f"models/lrp/{model_name}.json", 'w') as f:
+with open(f"lrp/{model_name}.json", 'w') as f:
 
     json.dump(data, f, indent=4)

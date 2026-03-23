@@ -12,8 +12,16 @@ import keyrank_rs
 
 import json
 
+log_softmax = nn.LogSoftmax(dim=1)
 
 device = torch.device('cuda')
+
+def metadata_best_epoch(model_name) -> int:
+    with open(f"models/{model_name}/metadata.json") as f:
+        metadata = json.load(f)
+        val_scores = metadata["scores"][1]
+        best_epoch = np.array(val_scores).argmin()
+    return best_epoch.item()
 
 def get_best_epoch(model_name) -> int:
     with open(f"models/eval/{model_name}.txt", 'r') as f:
@@ -27,7 +35,7 @@ def mean_2sbox_rank_per_trace(model : nn.Module, sbox_test_loader : DataLoader):
     
     total_rank = torch.zeros(500)
 
-    for traces, plaintexts, true_key in sbox_test_loader:
+    for traces, plaintexts, true_key in tqdm(sbox_test_loader):
 
         traces : torch.Tensor = traces.to(device).squeeze()
         plaintexts : torch.Tensor = plaintexts.to(device)
@@ -50,7 +58,7 @@ def mean_2sbox_rank_per_trace(model : nn.Module, sbox_test_loader : DataLoader):
 
         for keyscores in keyscores_both:
             # logsum scores before calculating rank
-            keyscores = keyscores.softmax(dim=1).log()
+            keyscores = log_softmax(keyscores)
             keyscore_acc = torch.zeros(256)
 
             for idx,keyscore in enumerate(keyscores):
@@ -62,20 +70,16 @@ def mean_2sbox_rank_per_trace(model : nn.Module, sbox_test_loader : DataLoader):
 
     return mean_ranks
 
-def mean_sbox_rank_per_trace(model : nn.Module, sbox_test_loader : DataLoader):
+def mean_sbox_rank_per_trace(model : nn.Module, sbox_test_loader : DataLoader, sbox=0):
     
     total_rank = torch.zeros(500)
 
-    for traces, plaintexts, true_key in tqdm(sbox_test_loader, 'computing keyrank', leave=False):
+    for traces, plaintexts, true_key in tqdm(sbox_test_loader):
 
         traces : torch.Tensor = traces.to(device)
-        plaintexts : torch.Tensor = plaintexts.squeeze().to(device)[..., 0] # only first plaintext for single sbox model
-
+        plaintexts : torch.Tensor = plaintexts.squeeze().to(device)[..., sbox]
 
         sbox_scores : torch.Tensor = model(traces.squeeze())
-
-        keyscores = torch.empty(sbox_scores.shape)
-
 
         plaintexts = plaintexts.long().detach().cpu().numpy()
         numpy_scores = sbox_scores.detach().cpu().numpy()
@@ -92,7 +96,7 @@ def mean_sbox_rank_per_trace(model : nn.Module, sbox_test_loader : DataLoader):
             keyscore_acc += keyscore
 
             ranks = keyscore_acc.argsort(descending=True).argsort()
-
+        
             total_rank[idx] += ranks[int(true_key)]
 
     mean_ranks = total_rank / len(sbox_test_loader)
@@ -102,30 +106,31 @@ def mean_sbox_rank_per_trace(model : nn.Module, sbox_test_loader : DataLoader):
 
 
 IMPLEMENTATION = "fixslice"
-PREDICTION_TARGET = "sbox"
+PREDICTION_TARGET = ["sbox2"]
 ARCH = "zhang"
-TRACE_START = 0
-TRACE_END = 1000
+TRACE_START = 400
+TRACE_END = 1500
+
+SEED = 777
+
+BYTE = 1
 
 
-
-bytes = [
-    (0,),
-]
-
-for byte, in bytes:
-    model_name = f"{IMPLEMENTATION}-{PREDICTION_TARGET}-byte{byte}-{ARCH}-{TRACE_START}_{TRACE_END}"
+for PREDICTION_TARGET in PREDICTION_TARGET:
+    model_name = f"{IMPLEMENTATION}-{PREDICTION_TARGET}-byte{BYTE}-{ARCH}-{TRACE_START}_{TRACE_END}-s{777}"
     
-    best_epoch = get_best_epoch(model_name)
+    best_epoch = metadata_best_epoch(model_name)
     
     model = torch.load(f"models/{model_name}/epoch{best_epoch}.pt", weights_only=False)
 
-    _, _, test_loader = get_dataloaders(200, PREDICTION_TARGET, byte, TRACE_START, TRACE_END)
+    _, _, test_loader = get_dataloaders(200, PREDICTION_TARGET, BYTE, TRACE_START, TRACE_END, SEED)
 
     if PREDICTION_TARGET == "2sbox":
         mean_ranks = mean_2sbox_rank_per_trace(model, test_loader).tolist()
     elif PREDICTION_TARGET == "sbox":
         mean_ranks = mean_sbox_rank_per_trace(model, test_loader).tolist()
+    elif PREDICTION_TARGET == "sbox2":
+        mean_ranks = mean_sbox_rank_per_trace(model, test_loader, 1).tolist()
 
     info = {
         "model_name" : model_name,
@@ -133,6 +138,6 @@ for byte, in bytes:
         "per_trace_ranks" : mean_ranks,
     }
 
-    with open(f"models/n_trace_scores/{model_name}.txt", 'w') as f:
+    with open(f"n_trace_scores/{model_name}.json", 'w') as f:
 
         json.dump(info, f, indent=4)

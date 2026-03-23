@@ -6,7 +6,12 @@ from torch.utils.data import DataLoader, Dataset, random_split
 
 from keyrank_rs import sbox_key_permutations
 
-DATAFOLDER = "C:/Data"
+import os
+
+if os.name == "nt":
+    DATAFOLDER = "C:/Data"
+else:
+    DATAFOLDER = "/mnt/c/Data"
 
 train_hdf = h5py.File(f"{DATAFOLDER}/simpleserial-aes-fix-500000-diff-profile.hdf5")
 val_test_hdf = h5py.File(f"{DATAFOLDER}/simpleserial-aes-fix-500-diff.hdf5")
@@ -147,6 +152,14 @@ class SboxTestingTraceSet(Dataset):
 def trace_sample() -> torch.Tensor:
     return train_traces[44534]
 
+
+def get_mean_std(trace_interval_start, trace_interval_end):
+    train_traces_trunc = train_traces[..., trace_interval_start:trace_interval_end]
+
+    train_traces_mean = train_traces_trunc.mean()
+    train_traces_std = train_traces_trunc.std()
+
+    return train_traces_mean, train_traces_std
 
 
 def get_dataloaders(

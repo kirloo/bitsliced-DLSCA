@@ -11,11 +11,13 @@ import os
 
 import keyrank_rs
 
+import json
+
 device = torch.device("cuda")
 
 
 
-def mean_keyrank(model : nn.Module, test_loader : DataLoader):
+def mean_keyrank(model : nn.Module, test_loader : DataLoader, n_traces=500):
     """Compute mean keyrank across trace set of N keys with M traces per key"""
     total_rank = 0
 
@@ -24,9 +26,9 @@ def mean_keyrank(model : nn.Module, test_loader : DataLoader):
         traces = traces.to(device)
         key = key.to(device)
 
-        output : torch.Tensor = model(traces.squeeze())
+        output : torch.Tensor = model(traces.squeeze()[0:n_traces, :])
 
-        output = output.softmax(dim=0).log().sum(dim=0)
+        output = output.softmax(dim=1).log().sum(dim=0)
 
         ranks = output.argsort(dim=-1, descending=True).argsort(dim=-1)
 
@@ -68,11 +70,42 @@ def mean_sbox_rank(model, sbox_test_loader, n_traces=500, plaintext=0):
 
     return mean_rank
 
+def mean_single_sbox_rank(model, sbox_test_loader, n_traces=500):
+    """Compute mean keyrank from an sbox predicting model across trace set of N keys with M traces per key"""
+    total_rank = 0
+
+    for traces, plaintexts, true_key in tqdm(sbox_test_loader, "validating", unit='key', leave=False):
+
+        traces : torch.Tensor = traces.to(device)
+
+        plaintexts : torch.Tensor = plaintexts.squeeze().to(device)
+
+        sbox_scores : torch.Tensor = model(traces.squeeze()[0:n_traces, :])
+
+        plaintexts = plaintexts.long().detach().cpu().numpy()[0:n_traces]
+        numpy_scores = sbox_scores.detach().cpu().numpy()
+            
+        numpy_keyscores = keyrank_rs.sbox_scores_to_keyscores_parallel(plaintexts, numpy_scores)
+
+        keyscores = torch.Tensor(numpy_keyscores).to(device)
+
+        # logsum scores before calculating rank
+        keyscores = keyscores.softmax(dim=1).log().sum(dim=0)
+        #keyscores = keyscores.mean(dim=0).softmax(dim=0)
+
+        ranks = keyscores.argsort(dim=-1, descending=True).argsort(dim=-1)
+        
+        total_rank += ranks[..., int(true_key)].mean(dtype=float)
+
+    mean_rank = total_rank / len(sbox_test_loader)
+
+    return mean_rank
+
 def mean_2sbox_rank(model : nn.Module, sbox_test_loader, n_traces=500):
     
     total_rank = 0
 
-    for traces, plaintexts, true_key in tqdm(sbox_test_loader, desc='evaluating'):
+    for traces, plaintexts, true_key in sbox_test_loader:
 
         traces : torch.Tensor = traces.to(device).squeeze()[0:n_traces]
         plaintexts : torch.Tensor = plaintexts.to(device)
@@ -81,10 +114,12 @@ def mean_2sbox_rank(model : nn.Module, sbox_test_loader, n_traces=500):
         plaintexts : np.ndarray  = plaintexts.transpose((1, 0))
 
 
-        # 2PT model outputs list of 2 tensors
-        sbox_scores : torch.Tensor = model(traces)
-        sbox_scores = torch.stack(sbox_scores).detach().cpu().numpy()
-
+        sbox_scores = model(traces)
+        # Handle both list and tensor with extra dimension
+        if type(sbox_scores) == list:
+            sbox_scores = torch.stack(sbox_scores).detach().cpu().numpy()
+        else:
+            sbox_scores = sbox_scores.detach().cpu().numpy()
 
         for scores, pt in zip(sbox_scores, plaintexts):
 
@@ -99,24 +134,25 @@ def mean_2sbox_rank(model : nn.Module, sbox_test_loader, n_traces=500):
             total_rank += rank[int(true_key)].mean(dtype=float)
 
 
-    mean_rank = total_rank / (2 * len(sbox_test_loader))
+    mean_rank = total_rank / (2.0 * len(sbox_test_loader))
 
     return mean_rank
 
+# Loss computations
 
 def single_sbox_loss(loss_fn, output, targets, sbox=0):
     return loss_fn(output, targets[..., sbox])
 
-def individual_score_loss(loss_fn, outputs, targets):
-    "Combine loss from two outputs and targets"
-    loss1 = loss_fn(outputs[0], targets[..., 0])
-    loss2 = loss_fn(outputs[1], targets[..., 1])
-    loss = (loss1 + loss2) * 0.5
+def individual_score_loss(loss_fn, outputs, targets, w1 = 0.5):
+    w2 = 1.0 - w1
+    loss1 = loss_fn(outputs[0], targets[..., 0]) * w1
+    loss2 = loss_fn(outputs[1], targets[..., 1]) * w2
+    loss = (loss1 + loss2)
     return loss
 
 def combined_score_loss(loss_fn, outputs, target, plaintexts):
     # map both sbox scores to key score
-    # and combine (plain sum?) before computing loss
+    # and sum before computing loss
 
     # target must be key
     plaintexts1 = plaintexts[..., 0]
@@ -128,9 +164,8 @@ def combined_score_loss(loss_fn, outputs, target, plaintexts):
     mapped1 = outputs[0].gather(-1, perms1)
     mapped2 = outputs[1].gather(-1, perms2)
 
-    # Should we do something here? TODO
-    # Seems like we need to average, larger logits == bad ??
-    output_keyscores = (mapped1 + mapped2) * 0.5
+    # Could weight?
+    output_keyscores = mapped1 + mapped2
 
     loss = loss_fn(output_keyscores, target)
 
@@ -148,6 +183,11 @@ def train_model(
         scores : tuple[list,list] = ([],[]),
         n_epochs = 10,
         prediction_target = "key",
+        regularization = None,
+        reg_weight = 0.0,
+        combo_loss_weight = 0.5,
+        validation_N_traces = 10,
+        implementation = "fixslice",
     ):
 
     model.to(device)
@@ -163,7 +203,7 @@ def train_model(
 
         train_loss = 0
 
-        for input, target, plaintexts in tqdm(train_loader, desc='training', unit='batch', leave=True):
+        for input, target, plaintexts in tqdm(train_loader, desc='training epoch', unit="batch", leave=False):
 
             target = target.type(torch.LongTensor)
 
@@ -175,21 +215,32 @@ def train_model(
 
             output = model(input)
 
-            if prediction_target == "2sbox*": # map before loss computation
+
+            if implementation == "tinyaes":
+                loss = loss_fn(output, target)
+            elif prediction_target == "2sbox*": # map before loss computation
                 loss = combined_score_loss(loss_fn, output, target, plaintexts)
             elif prediction_target == "2sbox":
-                loss = individual_score_loss(loss_fn, output, target)
+                loss = individual_score_loss(loss_fn, output, target, combo_loss_weight)
             elif prediction_target == "sbox":
                 loss = single_sbox_loss(loss_fn, output, target)
             elif prediction_target == "sbox2":
                 loss = single_sbox_loss(loss_fn, output, target, sbox=1)
+            elif prediction_target == "key":
+                loss = loss_fn(output, target)
             
+            if regularization == "L1":
+                param_abs_value = sum(param.abs().sum() for param in model.parameters())
+                loss += param_abs_value * reg_weight
+            elif regularization == "L2":
+                param_abs_value = sum(param.pow(2).sum() for param in model.parameters())
+                loss += param_abs_value * reg_weight
+
             loss.backward()
 
             optimizer.step()
 
             train_loss+=loss.item()
-
 
         train_loss /= len(train_loader)
 
@@ -199,19 +250,21 @@ def train_model(
         # Validate
         model.eval()
         with torch.no_grad():
-            if prediction_target == "key":
-                val_mean_rank = mean_keyrank(model, val_loader, 10)
+            if implementation == "tinyaes":
+                val_mean_rank = mean_single_sbox_rank(model, val_loader, validation_N_traces)
+            elif prediction_target == "key":
+                val_mean_rank = mean_keyrank(model, val_loader, validation_N_traces)
             elif prediction_target == "sbox":
-                val_mean_rank = mean_sbox_rank(model, val_loader, 10)
+                val_mean_rank = mean_sbox_rank(model, val_loader, validation_N_traces)
             elif prediction_target == "sbox2":
-                val_mean_rank = mean_sbox_rank(model, val_loader, 10, plaintext=1)
+                val_mean_rank = mean_sbox_rank(model, val_loader, validation_N_traces, plaintext=1)
             elif prediction_target in ["2sbox", "2sbox*"]:
-                val_mean_rank = mean_2sbox_rank(model, val_loader, 10)
+                val_mean_rank = mean_2sbox_rank(model, val_loader, validation_N_traces)
             
         val_ranks.append(float(val_mean_rank))
 
         torch.save(model, f"models/{folder}/epoch{epoch}.pt")
         
-        print(f"Epoch #{epoch+1} of {n_epochs}, training loss: {train_loss:.3f}, val mean keyrank: {val_mean_rank:.3f}")
+        print(f"Epoch #{epoch+1} of {n_epochs}, training loss: {train_loss:.3f}, val mean keyrank: {val_mean_rank:.3f}", flush=True)
 
     return (train_losses, val_ranks)
