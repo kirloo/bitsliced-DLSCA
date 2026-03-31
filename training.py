@@ -16,6 +16,8 @@ import json
 device = torch.device("cuda")
 
 
+log_softmax = nn.LogSoftmax(dim=1)
+
 
 def mean_keyrank(model : nn.Module, test_loader : DataLoader, n_traces=500):
     """Compute mean keyrank across trace set of N keys with M traces per key"""

@@ -20,14 +20,14 @@ def metadata_best_epoch(model_name) -> int:
     return best_epoch.item()
 
 IMPLEMENTATION = "fixslice"
-PREDICTION_TARGET = "sbox"
+PREDICTION_TARGET = "key"
 TARGET_BYTE = 1
 ARCH = "zhang"
 
 SEED = 777
 
-TRACE_START = 400
-TRACE_END = 1500
+TRACE_START = 0
+TRACE_END = 1000
 
 INPUT_LENGTH = TRACE_END - TRACE_START
 
@@ -57,21 +57,18 @@ layer_lrp = captum.attr.LRP(sbox_model)
 total_attr = torch.zeros(INPUT_LENGTH)
 total_abs_attr = torch.zeros(INPUT_LENGTH)
 
-for trace, plaintexts, key in tqdm(test_loader):
-#for trace, key in tqdm(test_loader):
+#for trace, plaintexts, key in tqdm(test_loader):
+for trace, key in tqdm(test_loader):
     for mod in sbox_model.modules():
         mod.rule = EpsilonRule()
 
     trace = trace[:, 0, :]
-    plaintexts = plaintexts[:, 0, :].squeeze()
+    #plaintexts = plaintexts[:, 0, :].squeeze()
     key = key.item()
 
-    print(plaintexts)
-    quit()
-
     # Add round key (plain key) then sbox
-    sbox1 = s_box[int(plaintexts[0]) ^ int(key)]
-    sbox2 = s_box[int(plaintexts[1]) ^ int(key)]
+    #sbox1 = s_box[int(plaintexts[0]) ^ int(key)]
+    #sbox2 = s_box[int(plaintexts[1]) ^ int(key)]
 
     if PREDICTION_TARGET == "sbox":
         attr = layer_lrp.attribute(trace.to(device), target=sbox1).squeeze()

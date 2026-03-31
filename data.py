@@ -4,14 +4,12 @@ import numpy as np
 
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from keyrank_rs import sbox_key_permutations
-
 import os
 
 if os.name == "nt":
     DATAFOLDER = "C:/Data"
 else:
-    DATAFOLDER = "/mnt/c/Data"
+    DATAFOLDER = "/mnt/storssd/Data"
 
 train_hdf = h5py.File(f"{DATAFOLDER}/simpleserial-aes-fix-500000-diff-profile.hdf5")
 val_test_hdf = h5py.File(f"{DATAFOLDER}/simpleserial-aes-fix-500-diff.hdf5")
@@ -146,6 +144,26 @@ class SboxTestingTraceSet(Dataset):
         key = self.keys[idx]
 
         return (traces, plaintexts, key)
+    
+class FullKeyTestingSet(Dataset):
+    def __init__(self, traces, plaintexts, keys):
+
+        self.traces = traces
+
+        # Plaintext must be included to map possible sbox outpouts back to keys
+        self.plaintexts = plaintexts[..., :]
+        self.keys = keys[..., :]
+
+    def __len__(self):
+        return self.traces.shape[0]
+    
+    def __getitem__(self, idx):
+        # One sample, N traces, N plaintexts, single key
+        traces = self.traces[idx].squeeze()
+        plaintexts = self.plaintexts[idx].squeeze()
+        key = self.keys[idx].squeeze()
+
+        return (traces, plaintexts, key)
 
 
 
@@ -204,3 +222,29 @@ def get_dataloaders(
 
 
     return train_loader,val_loader,test_loader
+
+
+def get_fullkey_testloader(
+        trace_interval_start : int,
+        trace_interval_end : int,
+        seed = 777,
+    ) -> DataLoader:
+
+    torch_rng = torch.manual_seed(seed)
+
+    train_traces_trunc = train_traces[..., trace_interval_start:trace_interval_end]
+    val_test_traces_trunc = val_test_traces[..., trace_interval_start:trace_interval_end]
+
+    train_traces_mean = train_traces_trunc.mean()
+    train_traces_std = train_traces_trunc.std()
+
+    val_test_traces_norm = (val_test_traces_trunc - train_traces_mean) / train_traces_std
+
+    sbox_val_test_set = FullKeyTestingSet(val_test_traces_norm, val_test_plaintexts, val_test_keys)
+    _, sbox_test_set = random_split(sbox_val_test_set, [0.5, 0.5], generator = torch_rng)
+
+
+    test_loader = DataLoader(sbox_test_set, shuffle=False)
+
+
+    return test_loader
